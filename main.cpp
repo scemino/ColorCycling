@@ -1,7 +1,10 @@
 #include <GL/glew.h>
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include <array>
 #include <fstream>
+#include <imgui.h>
+#include <imgui/examples/imgui_impl_opengl3.h>
+#include <imgui/examples/imgui_impl_sdl.h>
 #include <iostream>
 #include <sstream>
 
@@ -10,36 +13,44 @@ static float fbheight = 480;
 
 SDL_Window *m_window{nullptr};
 SDL_GLContext m_glContext{nullptr};
-static unsigned int img_tex, pal_tex, prog;
-static unsigned int create_shader(unsigned int type, const char *src);
+int shaderProgram;
+unsigned int VAO;
+static unsigned int img_tex, pal_tex;
+
+const char *vertexShaderSource = "#version 330 core\n"
+                                 "uniform mat4 xform;\n"
+                                 "layout (location = 0) in vec4 attr_vertex;\n"
+                                 "in vec2 uvscale;\n"
+                                 "out vec2 uv;\n"
+                                 "void main()\n"
+                                 "{\n"
+                                 "   gl_Position = xform * attr_vertex;\n"
+                                 "   uv = (attr_vertex.xy * vec2(0.5, -0.5) + 0.5) * uvscale;\n"
+                                 //                                 "   uv = (vec2(attr_vertex.xy)* vec2(0.5, -0.5)+0.5);\n"
+                                 "}\0";
+const char *fragmentShaderSource = "#version 330 core\n"
+                                   "out vec4 FragColor;\n"
+                                   "in vec2 uv;\n"
+                                   "uniform sampler2D img_tex;\n"
+                                   "uniform sampler1D pal_tex;\n"
+                                   "void main()\n"
+                                   "{\n"
+                                   "  float cidx = texture(img_tex, uv).x;\n"
+                                   "  vec3 color = texture(pal_tex, cidx).xyz;\n"
+                                   "  FragColor.xyz = color;\n"
+                                   "  FragColor.a = 1.0;\n"
+                                   "}\n\0";
 
 static const char *vsdr =
     "uniform mat4 xform;\n"
-    "uniform vec2 uvscale;\n"
-    "attribute vec4 attr_vertex;\n"
-    "varying vec2 uv;\n"
+    "in vec2 uvscale;\n"
+    "in vec4 attr_vertex;\n"
+    "out vec2 uv;\n"
     "void main()\n"
     "{\n"
     "\tgl_Position = xform * attr_vertex;\n"
     "\tuv = (attr_vertex.xy * vec2(0.5, -0.5) + 0.5) * uvscale;\n"
     "}\n";
-
-static const char *psdr =
-    "uniform sampler2D img_tex;\n"
-    "uniform sampler1D pal_tex;\n"
-    "varying vec2 uv;\n"
-    "void main()\n"
-    "{\n"
-    "\tfloat cidx = texture2D(img_tex, uv).x;\n"
-    "\tvec3 color = texture1D(pal_tex, cidx).xyz;\n"
-    "\tgl_FragColor.xyz = color;\n"
-    "\tgl_FragColor.a = 1.0;\n"
-    "}\n";
-
-static float verts[] = {
-    -1, -1, 1, -1, 1, 1,
-    -1, -1, 1, 1, -1, 1};
-static unsigned int vbo;
 
 static unsigned int next_pow2(unsigned int x) {
   --x;
@@ -65,7 +76,7 @@ static void endian_swap(int32_t *value) {
   chs[2] = temp;
 }
 
-void endian_swap(int16_t *value) {
+static void endian_swap(int16_t *value) {
   unsigned char *chs;
   unsigned char temp;
 
@@ -76,7 +87,7 @@ void endian_swap(int16_t *value) {
   chs[1] = temp;
 }
 
-void endian_swap(uint16_t *value) {
+static void endian_swap(uint16_t *value) {
   endian_swap((int16_t *) value);
 }
 
@@ -203,139 +214,6 @@ static void loadLbm(const std::string &path, Ilbm &image) {
   is.close();
 }
 
-static unsigned int create_program(const char *vsdr, const char *psdr) {
-  unsigned int vs, ps, prog;
-  int status;
-
-  if (!(vs = create_shader(GL_VERTEX_SHADER, vsdr))) {
-    return 0;
-  }
-  if (!(ps = create_shader(GL_FRAGMENT_SHADER, psdr))) {
-    glDeleteShader(vs);
-    return 0;
-  }
-
-  prog = glCreateProgram();
-  glAttachShader(prog, vs);
-  glAttachShader(prog, ps);
-  glLinkProgram(prog);
-
-  glGetProgramiv(prog, GL_LINK_STATUS, &status);
-  if (!status) {
-    fprintf(stderr, "failed to link shader program\n");
-    glDeleteProgram(prog);
-    prog = 0;
-  }
-  return prog;
-}
-
-static unsigned int create_shader(unsigned int type, const char *src) {
-  unsigned int sdr;
-  int status, info_len;
-
-  sdr = glCreateShader(type);
-  glShaderSource(sdr, 1, &src, 0);
-  glCompileShader(sdr);
-
-  glGetShaderiv(sdr, GL_COMPILE_STATUS, &status);
-  if (!status) {
-    fprintf(stderr, "failed to compile %s shader\n", type == GL_VERTEX_SHADER ? "vertex" : "pixel");
-  }
-
-  glGetShaderiv(sdr, GL_INFO_LOG_LENGTH, &info_len);
-  if (info_len) {
-    char *buf = (char *) alloca(info_len + 1);
-    glGetShaderInfoLog(sdr, info_len, 0, buf);
-    buf[info_len] = 0;
-    if (buf[0]) {
-      fprintf(stderr, "compiler output:\n%s\n", buf);
-    }
-  }
-
-  if (!status) {
-    glDeleteShader(sdr);
-    sdr = 0;
-  }
-  return sdr;
-}
-
-static void init(Ilbm &img) {
-  if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-    std::ostringstream ss;
-    ss << "Error when initializing SDL (error=" << SDL_GetError() << ")";
-    throw std::runtime_error(ss.str());
-  }
-
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  auto window_flags = (SDL_WindowFlags)(
-      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-  m_window = SDL_CreateWindow("SDL/OpenGL Color cycling", SDL_WINDOWPOS_CENTERED,
-                              SDL_WINDOWPOS_CENTERED, 640, 480, window_flags);
-
-  // setup OpenGL
-  m_glContext = SDL_GL_CreateContext(m_window);
-  if (!m_glContext) {
-    std::ostringstream ss;
-    ss << "Error when creating GL context (error=" << SDL_GetError() << ")";
-    throw std::runtime_error(ss.str());
-  }
-
-  auto err = glewInit();
-  if (GLEW_OK != err) {
-    std::ostringstream ss;
-    ss << "Error when initializing glew " << glewGetErrorString(err);
-    throw std::runtime_error(ss.str());
-  }
-
-  SDL_GL_MakeCurrent(m_window, m_glContext);
-  SDL_GL_SetSwapInterval(1);
-
-  glGenBuffers(1, &vbo);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STATIC_DRAW);
-
-  auto tex_xsz = next_pow2(fbwidth);
-  auto tex_ysz = next_pow2(fbheight);
-
-  glGenTextures(1, &img_tex);
-  glBindTexture(GL_TEXTURE_2D, img_tex);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, tex_xsz, tex_ysz, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, 0);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_LUMINANCE, GL_UNSIGNED_BYTE, img.image);
-
-  glGenTextures(1, &pal_tex);
-  glBindTexture(GL_TEXTURE_1D, pal_tex);
-  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, img.palette);
-
-  if (!(prog = create_program(vsdr, psdr))) {
-    return;
-  }
-  glBindAttribLocation(prog, 0, "attr_vertex");
-  glLinkProgram(prog);
-  glUseProgram(prog);
-
-  int loc;
-  if ((loc = glGetUniformLocation(prog, "img_tex")) >= 0) {
-    glUniform1i(loc, 0);
-  }
-  if ((loc = glGetUniformLocation(prog, "pal_tex")) >= 0) {
-    glUniform1i(loc, 1);
-  }
-  if ((loc = glGetUniformLocation(prog, "uvscale")) >= 0) {
-    glUniform2f(loc, (float) fbwidth / (float) tex_xsz, (float) fbheight / (float) tex_ysz);
-  }
-  err = glGetError();
-  assert(err == GL_NO_ERROR);
-}
-
 const int CYCLE_NORMAL = 0;
 const int CYCLE_REVERSE = 2;
 const int CYCLE_PINGPONG = 3;
@@ -452,26 +330,6 @@ static void update(Ilbm &img) {
   glTexSubImage1D(GL_TEXTURE_1D, 0, 0, 256, GL_RGB, GL_UNSIGNED_BYTE, img.palette);
 }
 
-static void render() {
-  glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  glUseProgram(prog);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, img_tex);
-  glActiveTexture(GL_TEXTURE1);
-  glBindTexture(GL_TEXTURE_1D, pal_tex);
-  glActiveTexture(GL_TEXTURE0);
-
-  glEnableVertexAttribArray(0);
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
-  glDrawArrays(GL_TRIANGLES, 0, 6);
-
-  // swap
-  SDL_GL_SwapWindow(m_window);
-  auto err = glGetError();
-  assert(err == GL_NO_ERROR);
-}
-
 static void reshape(int x, int y) {
   int loc;
   float aspect = (float) x / (float) y;
@@ -486,47 +344,299 @@ static void reshape(int x, int y) {
     xform[5] = aspect / fbaspect;
   }
 
-  glUseProgram(prog);
-  if ((loc = glGetUniformLocation(prog, "xform")) >= 0) {
+  glUseProgram(shaderProgram);
+  if ((loc = glGetUniformLocation(shaderProgram, "xform")) >= 0) {
     glUniformMatrix4fv(loc, 1, GL_FALSE, xform);
   }
+
+  auto err = glGetError();
+  assert(err == GL_NO_ERROR);
 }
 
-static bool pollEvent(SDL_Event &event) {
-  auto result = SDL_PollEvent(&event);
-  if (result && event.type == SDL_WINDOWEVENT) {
-    int w, h;
-    SDL_GL_GetDrawableSize(m_window, &w, &h);
-    reshape(w, h);
-    return false;
+static void cleanup() {
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplSDL2_Shutdown();
+  ImGui::DestroyContext();
+
+  SDL_GL_DeleteContext(m_glContext);
+  SDL_DestroyWindow(m_window);
+  SDL_Quit();
+}
+
+static void init(Ilbm &img) {
+
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
+    std::ostringstream ss;
+    ss << "Error when initializing SDL (error=" << SDL_GetError() << ")";
+    throw std::runtime_error(ss.str());
   }
-  return result;
+
+  // Decide GL+GLSL versions
+#if __APPLE__
+  // GL 3.2 Core + GLSL 150
+  const char *glsl_version = "#version 150";
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS,
+                      SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);// Always required on Mac
+  SDL_GL_SetAttribute(
+      SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
+  // GL 3.0 + GLSL 130
+  const char *glsl_version = "#version 130";
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+  SDL_GL_SetAttribute(
+      SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
+
+  // Create window with graphics context
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+  SDL_WindowFlags window_flags = (SDL_WindowFlags)(
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  m_window = SDL_CreateWindow("SDL/OpenGL Color cycling", SDL_WINDOWPOS_CENTERED,
+                              SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
+
+  // setup OpenGL
+  m_glContext = SDL_GL_CreateContext(m_window);
+  if (!m_glContext) {
+    std::ostringstream ss;
+    ss << "Error when creating GL context (error=" << SDL_GetError() << ")";
+    throw std::runtime_error(ss.str());
+  }
+
+  SDL_GL_MakeCurrent(m_window, m_glContext);
+  SDL_GL_SetSwapInterval(1);
+
+  auto err = glewInit();
+  if (GLEW_OK != err) {
+    std::ostringstream ss;
+    ss << "Error when initializing glew " << glewGetErrorString(err);
+    throw std::runtime_error(ss.str());
+  }
+
+  int vertexShader = glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+  glCompileShader(vertexShader);
+  // check for shader compile errors
+  int success;
+  char infoLog[512];
+  glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+  if (!success) {
+    glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+    std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n"
+              << infoLog << std::endl;
+  }
+  // fragment shader
+  int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+  glCompileShader(fragmentShader);
+  // check for shader compile errors
+  glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+  if (!success) {
+    glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+    std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n"
+              << infoLog << std::endl;
+  }
+  // link shaders
+  shaderProgram = glCreateProgram();
+  glAttachShader(shaderProgram, vertexShader);
+  glAttachShader(shaderProgram, fragmentShader);
+  glLinkProgram(shaderProgram);
+  // check for linking errors
+  glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+  if (!success) {
+    glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+    std::cout << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n"
+              << infoLog << std::endl;
+  }
+  glDeleteShader(vertexShader);
+  glDeleteShader(fragmentShader);
+
+  // set up vertex data (and buffer(s)) and configure vertex attributes
+  // ------------------------------------------------------------------
+  float vertices[] = {
+      1.0f, 1.0f, 0.0f, 0.0f,  // top right
+      1.0f, -1.0f, 0.0f, 0.0f, // bottom right
+      -1.0f, -1.0f, 0.0f, 0.0f,// bottom left
+      -1.0f, 1.0f, 0.0f, 0.0f  // top left
+  };
+  unsigned int indices[] = {
+      // note that we start from 0!
+      0, 1, 3,// first triangle
+      1, 2, 3 // second triangle
+  };
+
+  unsigned int VBO, EBO;
+  glGenVertexArrays(1, &VAO);
+  glGenBuffers(1, &VBO);
+  glGenBuffers(1, &EBO);
+  // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+  glBindVertexArray(VAO);
+
+  glBindBuffer(GL_ARRAY_BUFFER, VBO);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+  // position attribute
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+  glEnableVertexAttribArray(0);
+
+  auto tex_xsz = next_pow2(fbwidth);
+  auto tex_ysz = next_pow2(fbheight);
+
+  glGenTextures(1, &img_tex);
+  glBindTexture(GL_TEXTURE_2D, img_tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, tex_xsz, tex_ysz, 0, GL_RED, GL_UNSIGNED_BYTE, 0);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, img.image);
+
+  glGenTextures(1, &pal_tex);
+  glBindTexture(GL_TEXTURE_1D, pal_tex);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, img.palette);
+
+  glUseProgram(shaderProgram);
+  glUniform1i(glGetUniformLocation(shaderProgram, "img_tex"), 0);
+  glUniform1i(glGetUniformLocation(shaderProgram, "pal_tex"), 1);
+  glVertexAttrib2f(glGetAttribLocation(shaderProgram, "uvscale"), (float) fbwidth / (float) tex_xsz, (float) fbheight / (float) tex_ysz);
+
+  // Setup Dear ImGui context
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+
+  // Setup Dear ImGui style
+  ImGui::StyleColorsDark();
+
+  // Setup Platform/Renderer bindings
+  // window is the SDL_Window*
+  // contex is the SDL_GLContext
+  ImGui_ImplSDL2_InitForOpenGL(m_window, m_glContext);
+  ImGui_ImplOpenGL3_Init(glsl_version);
+
+  err = glGetError();
+  assert(err == GL_NO_ERROR);
+}
+
+static void render(Ilbm &img) {
+  // render
+  // ------
+  glClearColor(0.3f, 0.3f, 0.3f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  // bind textures on corresponding texture units
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, img_tex);
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_1D, pal_tex);
+
+  // draw our first triangle
+  glUseProgram(shaderProgram);
+  glBindVertexArray(VAO);// seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
+  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+
+  // Render dear imgui
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplSDL2_NewFrame(m_window);
+  ImGui::NewFrame();
+
+  ImGui::Begin("Debug");// Pass a pointer to our bool variable
+  // (the window will have a closing button
+  // that will clear the bool when clicked)
+  ImGui::Text("Size %dx%d", img.header.width, img.header.height);
+  std::ostringstream s;
+  s << (int) img.numCycles << " cycles";
+  if (ImGui::TreeNode(s.str().c_str())) {
+    for (auto i = 0; i < img.numCycles; i++) {
+      std::ostringstream cycleName;
+      cycleName << "cycle " << (i + 1);
+      if (ImGui::TreeNode(cycleName.str().c_str())) {
+        ImGui::Text("Rate %d", img.cycles[i].rate);
+        ImGui::Text("Low %d", img.cycles[i].low);
+        ImGui::Text("High %d", img.cycles[i].high);
+        ImGui::TreePop();
+      }
+    }
+    ImGui::TreePop();
+  }
+
+  // draw palette
+  if (ImGui::TreeNode("Palette")) {
+    auto palette = img.palette;
+    for (auto j = 0; j < 16; ++j) {
+      for (auto i = 0; i < 16; ++i) {
+        auto color = ImVec4(
+            (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
+        ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
+        ImGui::SameLine(0.f, 0.6f);
+      }
+      ImGui::NewLine();
+    }
+    ImGui::TreePop();
+  }
+
+  ImGui::End();
+
+  // imgui render
+  ImGui::Render();
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  SDL_GL_SwapWindow(m_window);
+
+  auto err = glGetError();
+  assert(err == GL_NO_ERROR);
 }
 
 static void renderLoop(Ilbm &img) {
   bool done = false;
   while (!done) {
     SDL_Event event;
-    while (pollEvent(event)) {
+    while (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL2_ProcessEvent(&event);
       if (event.type == SDL_QUIT) {
         done = true;
       }
+      if (event.type == SDL_WINDOWEVENT) {
+        int w, h;
+        SDL_GL_GetDrawableSize(m_window, &w, &h);
+        reshape(w, h);
+      } else if (event.type == SDL_DROPFILE) {// In case if dropped file
+        img.numCycles = 0;
+        loadLbm(event.drop.file, img);
+        glBindTexture(GL_TEXTURE_2D, img_tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, img.image);
+        glBindTexture(GL_TEXTURE_1D, pal_tex);
+        glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, img.palette);
+        SDL_free(event.drop.file);
+      }
     }
     update(img);
-    render();
+    render(img);
   }
 }
 
-static void deinit() {
-  SDL_GL_DeleteContext(m_glContext);
-  SDL_DestroyWindow(m_window);
-  SDL_Quit();
+static void usage(const char* exe) {
+  std::cout << "usage: " << exe << " file.lbm" << std::endl;
 }
 
-int main(int, char **) {
+int main(int argc, const char **argv) {
+  if (argc != 2) {
+    usage(argv[0]);
+    return EXIT_SUCCESS;
+  }
+
   Ilbm img;
-  loadLbm("V08.LBM", img);
+  loadLbm(argv[1], img);
   init(img);
   renderLoop(img);
-  deinit();
+  cleanup();
+  return EXIT_SUCCESS;
 }

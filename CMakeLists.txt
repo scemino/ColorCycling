@@ -9,6 +9,14 @@ if (NOT WIN32)
     find_package(OpenGL REQUIRED)
 endif ()
 
+include_directories(${PROJECT_SOURCE_DIR}/extlibs/imgui ${PROJECT_SOURCE_DIR}/extlibs)
+add_library(imgui
+        # Main Imgui files
+        extlibs/imgui/imgui.cpp extlibs/imgui/imgui_draw.cpp extlibs/imgui/imgui_widgets.cpp
+        extlibs/imgui/misc/cpp/imgui_stdlib.cpp
+        # SDL2+OpenGL-specific files
+        extlibs/imgui/examples/imgui_impl_sdl.cpp)
+
 include_directories(${NGLIB_HEADERS_DIR} ${SDL2_INCLUDE_DIRS})
-add_executable(${PROJECT_NAME} main.cpp)
-target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES} GLEW::GLEW)
+add_executable(${PROJECT_NAME} main.cpp extlibs/imgui/examples/imgui_impl_opengl3.cpp)
+target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES} GLEW::GLEW imgui)
