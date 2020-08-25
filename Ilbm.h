@@ -1,7 +1,9 @@
 #ifndef COLORCYCLING__ILBM_H
 #define COLORCYCLING__ILBM_H
 
+#include <array>
 #include <cstdint>
+#include <vector>
 
 struct Chunk {
   char id[4];
@@ -30,7 +32,7 @@ struct Crng {
 
 struct Ilbm {
   BitmapHeader header;
-  std::uint8_t *image{nullptr};
+  std::vector<std::uint8_t> image;
   std::array<std::uint8_t, 256 * 3> palette;
   std::array<Crng, 256> cycles;
   std::uint8_t numCycles{0};

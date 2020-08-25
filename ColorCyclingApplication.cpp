@@ -1,4 +1,5 @@
 #include "ColorCyclingApplication.h"
+#include "Util.h"
 #include <GL/glew.h>
 #include <SDL.h>
 #include <cstring>
@@ -105,45 +106,6 @@ static void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::
   pptr[2] = b;
 }
 
-static unsigned int nextPow2(unsigned int x) {
-  --x;
-  x |= x >> 1;
-  x |= x >> 2;
-  x |= x >> 4;
-  x |= x >> 8;
-  x |= x >> 16;
-  return x + 1;
-}
-
-static void endianSwap(int32_t *value) {
-  unsigned char *chs;
-  unsigned char temp;
-
-  chs = (unsigned char *) value;
-
-  temp = chs[0];
-  chs[0] = chs[3];
-  chs[3] = temp;
-  temp = chs[1];
-  chs[1] = chs[2];
-  chs[2] = temp;
-}
-
-static void endianSwap(int16_t *value) {
-  unsigned char *chs;
-  unsigned char temp;
-
-  chs = (unsigned char *) value;
-
-  temp = chs[0];
-  chs[0] = chs[1];
-  chs[1] = temp;
-}
-
-static void endianSwap(uint16_t *value) {
-  endianSwap((int16_t *) value);
-}
-
 static void loadLbm(const std::string &path, Ilbm &image) {
   std::ifstream is(path, std::ios::binary);
 
@@ -153,34 +115,33 @@ static void loadLbm(const std::string &path, Ilbm &image) {
   constexpr auto chunkSize = sizeof(Chunk);
   is.read((char *) &chunk, chunkSize);
 
-  endianSwap((int32_t *) &chunk.length);
+  Util::endianSwap((int32_t *) &chunk.length);
 
   // skip over 'PBM '
   is.seekg(4, std::ios::cur);
 
   while (!is.eof()) {
     is.read((char *) &chunk, chunkSize);
-    endianSwap((int32_t *) &chunk.length);
+    Util::endianSwap((int32_t *) &chunk.length);
     if (strncmp(chunk.id, "BMHD", 4) == 0) {
       is.read((char *) &image.header, sizeof(image.header));
-      endianSwap(&image.header.width);
-      endianSwap(&image.header.height);
-      endianSwap(&image.header.page_width);
-      endianSwap(&image.header.page_height);
+      Util::endianSwap(&image.header.width);
+      Util::endianSwap(&image.header.height);
+      Util::endianSwap(&image.header.page_width);
+      Util::endianSwap(&image.header.page_height);
       image.header.width += (2 - (image.header.width % 2)) % 2;// even widths only (round up)
     } else if (strncmp(chunk.id, "CMAP", 4) == 0) {
       is.read((char *) &image.palette[0], chunk.length);
     } else if (strncmp(chunk.id, "CRNG", 4) == 0) {
       is.read((char *) &image.cycles[image.numCycles], chunk.length);
-      endianSwap(&image.cycles[image.numCycles].padding);
-      endianSwap(&image.cycles[image.numCycles].rate);
-      endianSwap(&image.cycles[image.numCycles].flags);
+      Util::endianSwap(&image.cycles[image.numCycles].padding);
+      Util::endianSwap(&image.cycles[image.numCycles].rate);
+      Util::endianSwap(&image.cycles[image.numCycles].flags);
       image.numCycles++;
     } else if (strncmp(chunk.id, "BODY", 4) == 0) {
       if (image.header.compression) {
-        if (!temp) {
-          image.image = temp = (std::uint8_t *) malloc(image.header.width * image.header.height);
-        }
+        image.image.resize(image.header.width * image.header.height);
+        temp = image.image.data();
         signed char sdata;
         auto len = chunk.length;
         is.read((char *) &sdata, 1);
@@ -295,15 +256,15 @@ void ColorCyclingApplication::onInit() {
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
   glEnableVertexAttribArray(0);
 
-  auto tex_xsz = nextPow2(fbwidth);
-  auto tex_ysz = nextPow2(fbheight);
+  auto tex_xsz = Util::nextPow2(fbwidth);
+  auto tex_ysz = Util::nextPow2(fbheight);
 
   glGenTextures(1, &m_img_tex);
   glBindTexture(GL_TEXTURE_2D, m_img_tex);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, tex_xsz, tex_ysz, 0, GL_RED, GL_UNSIGNED_BYTE, 0);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image.data());
 
   glGenTextures(1, &m_pal_tex);
   glBindTexture(GL_TEXTURE_1D, m_pal_tex);
@@ -330,9 +291,9 @@ void ColorCyclingApplication::onEvent(SDL_Event &event) {
     m_image.numCycles = 0;
     loadLbm(event.drop.file, m_image);
     glBindTexture(GL_TEXTURE_2D, m_img_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image.data());
     glBindTexture(GL_TEXTURE_1D, m_pal_tex);
-    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, &m_image.palette[0]);
+    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, m_image.palette.data());
     SDL_free(event.drop.file);
     break;
   case SDL_KEYDOWN:
@@ -371,7 +332,6 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
       continue;
     rsize = m_image.cycles[i].high - m_image.cycles[i].low + 1;
 
-    static float time_msec = 0;
     time_msec += 100.0f / 60.f;
 
     offs = cycleOffset(m_image.cycles[i].flags, m_image.cycles[i].rate, rsize, time_msec);
@@ -443,34 +403,51 @@ void ColorCyclingApplication::reshape(int x, int y) {
 }
 
 void ColorCyclingApplication::onImGuiRender() {
-  ImGui::Begin("Debug");
-  if (ImGui::TreeNode("Info")) {
-    ImGui::Text("Image Size %dx%d", m_image.header.width, m_image.header.height);
-    ImGui::Text("Origin (x=%d, y=%d)", m_image.header.x, m_image.header.y);
-    ImGui::Text("%d Planes", m_image.header.num_planes);
-    const char *masks[] = {"none", "masked", "lasso (for MacPaint)"};
-    ImGui::Text("Mask: %s", masks[std::clamp((int)m_image.header.masking, 0, 2)]);
-    const char *compressions[] = {"uncompressed", "RLE", "vertical RLE"};
-    ImGui::Text("Compression: %s", compressions[std::clamp((int)m_image.header.compression, 0, 2)]);
-    ImGui::Text("Pixel aspect: %d:%d", m_image.header.x_aspect, m_image.header.y_aspect);
-    ImGui::Text("Page Size %dx%d", m_image.header.page_width, m_image.header.page_width);
-    ImGui::TreePop();
-  }
-
-  // draw palette
-  if (ImGui::TreeNode("Palette")) {
-    auto palette = &m_image.palette[0];
-    for (auto j = 0; j < 16; ++j) {
-      for (auto i = 0; i < 16; ++i) {
-        auto color = ImVec4(
-            (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
-        ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
-        ImGui::SameLine(0.f, 0.6f);
+  if (ImGui::BeginMainMenuBar()) {
+    if (ImGui::BeginMenu("File")) {
+      if (ImGui::MenuItem("Open")) {
       }
-      ImGui::NewLine();
+      ImGui::Separator();
+      if (ImGui::MenuItem("Quit", "Command|Ctrl+Q")) {
+        m_done = true;
+      }
+      ImGui::EndMenu();
     }
-    ImGui::TreePop();
+    if (ImGui::BeginMenu("View")) {
+      ImGui::MenuItem("Debug", "Command|Ctrl+D", &m_showDebug);
+      ImGui::EndMenu();
+    }
+    ImGui::EndMainMenuBar();
   }
 
-  ImGui::End();
+  if (m_showDebug && ImGui::Begin("Debug", &m_showDebug)) {
+    if (ImGui::TreeNode("Info")) {
+      ImGui::Text("Image Size %dx%d", m_image.header.width, m_image.header.height);
+      ImGui::Text("Origin (x=%d, y=%d)", m_image.header.x, m_image.header.y);
+      ImGui::Text("%d Planes", m_image.header.num_planes);
+      const char *masks[] = {"none", "masked", "lasso (for MacPaint)"};
+      ImGui::Text("Mask: %s", masks[std::clamp((int) m_image.header.masking, 0, 2)]);
+      const char *compressions[] = {"uncompressed", "RLE", "vertical RLE"};
+      ImGui::Text("Compression: %s", compressions[std::clamp((int) m_image.header.compression, 0, 2)]);
+      ImGui::Text("Pixel aspect: %d:%d", m_image.header.x_aspect, m_image.header.y_aspect);
+      ImGui::Text("Page Size %dx%d", m_image.header.page_width, m_image.header.page_width);
+      ImGui::TreePop();
+    }
+
+    // draw palette
+    if (ImGui::TreeNode("Palette")) {
+      auto palette = &m_image.palette[0];
+      for (auto j = 0; j < 16; ++j) {
+        for (auto i = 0; i < 16; ++i) {
+          auto color = ImVec4(
+              (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
+          ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
+          ImGui::SameLine(0.f, 0.6f);
+        }
+        ImGui::NewLine();
+      }
+      ImGui::TreePop();
+    }
+    ImGui::End();
+  }
 }
