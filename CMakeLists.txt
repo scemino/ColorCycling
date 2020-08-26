@@ -17,8 +17,12 @@ add_library(imgui
         # SDL2+OpenGL-specific files
         extlibs/imgui/examples/imgui_impl_sdl.cpp)
 
+add_library(ImGuiFileDialog
+        # Main Imgui files
+        extlibs/ImGuiFileDialog/ImGuiFileDialog.cpp)
+
 include_directories(${NGLIB_HEADERS_DIR} ${SDL2_INCLUDE_DIRS})
 add_executable(${PROJECT_NAME} main.cpp
         Application.cpp ColorCyclingApplication.cpp TimeSpan.cpp Util.cpp Window.cpp
         extlibs/imgui/examples/imgui_impl_opengl3.cpp)
-target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES} GLEW::GLEW imgui)
+target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES} GLEW::GLEW imgui ImGuiFileDialog)

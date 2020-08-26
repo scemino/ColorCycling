@@ -11,7 +11,7 @@ int main(int argc, const char **argv) {
     return EXIT_SUCCESS;
   }
 
-  ColorCyclingApplication app(argv[1]);
+  ColorCyclingApplication app;
   app.run();
   return EXIT_SUCCESS;
 }

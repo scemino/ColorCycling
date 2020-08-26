@@ -1,6 +1,7 @@
 #include "ColorCyclingApplication.h"
 #include "Util.h"
 #include <GL/glew.h>
+#include <ImGuiFileDialog/ImGuiFileDialog.h>
 #include <SDL.h>
 #include <cstring>
 #include <fstream>
@@ -106,92 +107,7 @@ static void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::
   pptr[2] = b;
 }
 
-static void loadLbm(const std::string &path, Ilbm &image) {
-  std::ifstream is(path, std::ios::binary);
-
-  Chunk chunk{};
-  std::uint8_t *temp = nullptr;
-  int bodyBytes = 0;
-  constexpr auto chunkSize = sizeof(Chunk);
-  is.read((char *) &chunk, chunkSize);
-
-  Util::endianSwap((int32_t *) &chunk.length);
-
-  // skip over 'PBM '
-  is.seekg(4, std::ios::cur);
-
-  while (!is.eof()) {
-    is.read((char *) &chunk, chunkSize);
-    Util::endianSwap((int32_t *) &chunk.length);
-    if (strncmp(chunk.id, "BMHD", 4) == 0) {
-      is.read((char *) &image.header, sizeof(image.header));
-      Util::endianSwap(&image.header.width);
-      Util::endianSwap(&image.header.height);
-      Util::endianSwap(&image.header.page_width);
-      Util::endianSwap(&image.header.page_height);
-      image.header.width += (2 - (image.header.width % 2)) % 2;// even widths only (round up)
-    } else if (strncmp(chunk.id, "CMAP", 4) == 0) {
-      is.read((char *) &image.palette[0], chunk.length);
-    } else if (strncmp(chunk.id, "CRNG", 4) == 0) {
-      is.read((char *) &image.cycles[image.numCycles], chunk.length);
-      Util::endianSwap(&image.cycles[image.numCycles].padding);
-      Util::endianSwap(&image.cycles[image.numCycles].rate);
-      Util::endianSwap(&image.cycles[image.numCycles].flags);
-      image.numCycles++;
-    } else if (strncmp(chunk.id, "BODY", 4) == 0) {
-      if (image.header.compression) {
-        image.image.resize(image.header.width * image.header.height);
-        temp = image.image.data();
-        signed char sdata;
-        auto len = chunk.length;
-        is.read((char *) &sdata, 1);
-        while (len > 0 && !is.eof()) {
-          len--;
-          /* ByteRun1 decompression */
-
-          /* [0..127]   : followed by n+1 bytes of data. */
-          if (sdata >= 0) {
-            auto i = sdata + 1;
-            for (auto j = 0; j < i; j++) {
-              char udata;
-              is.read(&udata, 1);
-              len--;
-              if (is.eof())
-                break;
-              *temp++ = udata;
-              bodyBytes++;
-            }
-          }
-          /* [-1..-127] : followed by byte to be repeated (-n)+1 times*/
-          else if (sdata <= -1 && sdata >= -127) {
-            auto i = (-sdata) + 1;
-            char udata;
-            is.read(&udata, 1);
-            len--;
-            for (auto j = 0; j < i; j++) {
-              *temp++ = udata;
-              bodyBytes++;
-            }
-          }
-          /* -128	   : NOOP. */
-          is.read((char *) &sdata, 1);
-        }
-      }
-      break;
-    } else {
-      if (chunk.length > 0)
-        is.seekg(chunk.length, std::ios::cur);
-    }
-    if (chunk.length % 2 != 0)
-      is.seekg(2 - (chunk.length % 2), std::ios::cur);
-  }
-
-  is.close();
-}
-
-ColorCyclingApplication::ColorCyclingApplication(const std::string &path) {
-  loadLbm(path, m_image);
-  memcpy(&m_palette[0], &m_image.palette[0], 256 * 3);
+ColorCyclingApplication::ColorCyclingApplication() {
 }
 
 ColorCyclingApplication::~ColorCyclingApplication() {
@@ -264,19 +180,108 @@ void ColorCyclingApplication::onInit() {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, tex_xsz, tex_ysz, 0, GL_RED, GL_UNSIGNED_BYTE, 0);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image.data());
 
   glGenTextures(1, &m_pal_tex);
   glBindTexture(GL_TEXTURE_1D, m_pal_tex);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, &m_image.palette[0]);
+  glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
 
   glUseProgram(m_shaderProgram);
   glUniform1i(glGetUniformLocation(m_shaderProgram, "img_tex"), 0);
   glUniform1i(glGetUniformLocation(m_shaderProgram, "pal_tex"), 1);
   glVertexAttrib2f(glGetAttribLocation(m_shaderProgram, "uvscale"), (float) fbwidth / (float) tex_xsz, (float) fbheight / (float) tex_ysz);
+}
+
+void ColorCyclingApplication::loadLbm(const std::string &path) {
+  m_image = std::make_unique<Ilbm>();
+  auto &image = *m_image;
+  std::ifstream is(path, std::ios::binary);
+
+  Chunk chunk{};
+  std::uint8_t *temp = nullptr;
+  int bodyBytes = 0;
+  constexpr auto chunkSize = sizeof(Chunk);
+  is.read((char *) &chunk, chunkSize);
+
+  Util::endianSwap((int32_t *) &chunk.length);
+
+  // skip over 'PBM '
+  is.seekg(4, std::ios::cur);
+
+  while (!is.eof()) {
+    is.read((char *) &chunk, chunkSize);
+    Util::endianSwap((int32_t *) &chunk.length);
+    if (strncmp(chunk.id, "BMHD", 4) == 0) {
+      is.read((char *) &image.header, sizeof(image.header));
+      Util::endianSwap(&image.header.width);
+      Util::endianSwap(&image.header.height);
+      Util::endianSwap(&image.header.page_width);
+      Util::endianSwap(&image.header.page_height);
+      image.header.width += (2 - (image.header.width % 2)) % 2;// even widths only (round up)
+    } else if (strncmp(chunk.id, "CMAP", 4) == 0) {
+      is.read((char *) &image.palette[0], chunk.length);
+    } else if (strncmp(chunk.id, "CRNG", 4) == 0) {
+      is.read((char *) &image.cycles[image.numCycles], chunk.length);
+      Util::endianSwap(&image.cycles[image.numCycles].padding);
+      Util::endianSwap(&image.cycles[image.numCycles].rate);
+      Util::endianSwap(&image.cycles[image.numCycles].flags);
+      image.numCycles++;
+    } else if (strncmp(chunk.id, "BODY", 4) == 0) {
+      if (image.header.compression) {
+        image.image.resize(image.header.width * image.header.height);
+        temp = image.image.data();
+        signed char sdata;
+        auto len = chunk.length;
+        is.read((char *) &sdata, 1);
+        while (len > 0 && !is.eof()) {
+          len--;
+          /* ByteRun1 decompression */
+
+          /* [0..127]   : followed by n+1 bytes of data. */
+          if (sdata >= 0) {
+            auto i = sdata + 1;
+            for (auto j = 0; j < i; j++) {
+              char udata;
+              is.read(&udata, 1);
+              len--;
+              if (is.eof())
+                break;
+              *temp++ = udata;
+              bodyBytes++;
+            }
+          }
+          /* [-1..-127] : followed by byte to be repeated (-n)+1 times*/
+          else if (sdata <= -1 && sdata >= -127) {
+            auto i = (-sdata) + 1;
+            char udata;
+            is.read(&udata, 1);
+            len--;
+            for (auto j = 0; j < i; j++) {
+              *temp++ = udata;
+              bodyBytes++;
+            }
+          }
+          /* -128	   : NOOP. */
+          is.read((char *) &sdata, 1);
+        }
+      }
+      memcpy(&m_palette[0], &image.palette[0], 256 * 3);
+      glBindTexture(GL_TEXTURE_2D, m_img_tex);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, image.image.data());
+      glBindTexture(GL_TEXTURE_1D, m_pal_tex);
+      glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, image.palette.data());
+      break;
+    } else {
+      if (chunk.length > 0)
+        is.seekg(chunk.length, std::ios::cur);
+    }
+    if (chunk.length % 2 != 0)
+      is.seekg(2 - (chunk.length % 2), std::ios::cur);
+  }
+
+  is.close();
 }
 
 void ColorCyclingApplication::onEvent(SDL_Event &event) {
@@ -287,13 +292,7 @@ void ColorCyclingApplication::onEvent(SDL_Event &event) {
     reshape(w, h);
     break;
   case SDL_DROPFILE:
-    // In case if dropped file
-    m_image.numCycles = 0;
-    loadLbm(event.drop.file, m_image);
-    glBindTexture(GL_TEXTURE_2D, m_img_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, m_image.image.data());
-    glBindTexture(GL_TEXTURE_1D, m_pal_tex);
-    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, m_image.palette.data());
+    loadLbm(event.drop.file);
     SDL_free(event.drop.file);
     break;
   case SDL_KEYDOWN:
@@ -323,28 +322,32 @@ void ColorCyclingApplication::onRender() {
 }
 
 void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
+  if (!m_image)
+    return;
+
+  auto &image = *m_image;
   /* for each cycling range in the image ... */
-  for (auto i = 0; i < m_image.numCycles; i++) {
+  for (auto i = 0; i < image.numCycles; i++) {
     int32_t offs, rsize, ioffs;
     int rev;
 
-    if (!m_image.cycles[i].rate)
+    if (!image.cycles[i].rate)
       continue;
-    rsize = m_image.cycles[i].high - m_image.cycles[i].low + 1;
+    rsize = image.cycles[i].high - image.cycles[i].low + 1;
 
     time_msec += 100.0f / 60.f;
 
-    offs = cycleOffset(m_image.cycles[i].flags, m_image.cycles[i].rate, rsize, time_msec);
+    offs = cycleOffset(image.cycles[i].flags, image.cycles[i].rate, rsize, time_msec);
 
     ioffs = (offs >> 8) % rsize;
 
     /* reverse when rev is 2 */
-    rev = m_image.cycles[i].flags == CYCLE_REVERSE ? 1 : 0;
+    rev = image.cycles[i].flags == CYCLE_REVERSE ? 1 : 0;
 
     for (auto j = 0; j < rsize; j++) {
       int pidx, to, next;
 
-      pidx = j + m_image.cycles[i].low;
+      pidx = j + image.cycles[i].low;
 
       if (rev) {
         to = (j + ioffs) % rsize;
@@ -357,7 +360,7 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
           next += rsize;
         }
       }
-      to += m_image.cycles[i].low;
+      to += image.cycles[i].low;
       //
       //      if(blend) {
       //        int r, g, b;
@@ -371,12 +374,12 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
       //
       //        set_palette(pidx, r, g, b);
       //      } else {
-      setPalette(m_image, pidx, m_palette[to * 3], m_palette[to * 3 + 1], m_palette[to * 3 + 2]);
+      setPalette(image, pidx, m_palette[to * 3], m_palette[to * 3 + 1], m_palette[to * 3 + 2]);
       //}
     }
   }
   glBindTexture(GL_TEXTURE_1D, m_pal_tex);
-  glTexSubImage1D(GL_TEXTURE_1D, 0, 0, 256, GL_RGB, GL_UNSIGNED_BYTE, &m_image.palette[0]);
+  glTexSubImage1D(GL_TEXTURE_1D, 0, 0, 256, GL_RGB, GL_UNSIGNED_BYTE, &image.palette[0]);
 }
 
 void ColorCyclingApplication::reshape(int x, int y) {
@@ -405,48 +408,65 @@ void ColorCyclingApplication::reshape(int x, int y) {
 void ColorCyclingApplication::onImGuiRender() {
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
-      if (ImGui::MenuItem("Open")) {
+      if (ImGui::MenuItem("Open", "Ctrl+O")) {
+        // open Dialog Simple
+        igfd::ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".LBM", ".");
       }
       ImGui::Separator();
-      if (ImGui::MenuItem("Quit", "Command|Ctrl+Q")) {
+      if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
         m_done = true;
       }
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-      ImGui::MenuItem("Debug", "Command|Ctrl+D", &m_showDebug);
+      ImGui::MenuItem("Debug", "Ctrl+I", &m_showInfo, (bool) m_image);
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
   }
 
-  if (m_showDebug && ImGui::Begin("Debug", &m_showDebug)) {
-    if (ImGui::TreeNode("Info")) {
-      ImGui::Text("Image Size %dx%d", m_image.header.width, m_image.header.height);
-      ImGui::Text("Origin (x=%d, y=%d)", m_image.header.x, m_image.header.y);
-      ImGui::Text("%d Planes", m_image.header.num_planes);
-      const char *masks[] = {"none", "masked", "lasso (for MacPaint)"};
-      ImGui::Text("Mask: %s", masks[std::clamp((int) m_image.header.masking, 0, 2)]);
-      const char *compressions[] = {"uncompressed", "RLE", "vertical RLE"};
-      ImGui::Text("Compression: %s", compressions[std::clamp((int) m_image.header.compression, 0, 2)]);
-      ImGui::Text("Pixel aspect: %d:%d", m_image.header.x_aspect, m_image.header.y_aspect);
-      ImGui::Text("Page Size %dx%d", m_image.header.page_width, m_image.header.page_width);
-      ImGui::TreePop();
+  // display
+  if (igfd::ImGuiFileDialog::Instance()->FileDialog("ChooseFileDlgKey")) {
+    if (igfd::ImGuiFileDialog::Instance()->IsOk) {
+      auto filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+      loadLbm(filePathName);
     }
+    // close
+    igfd::ImGuiFileDialog::Instance()->CloseDialog("ChooseFileDlgKey");
+  }
 
-    // draw palette
-    if (ImGui::TreeNode("Palette")) {
-      auto palette = &m_image.palette[0];
-      for (auto j = 0; j < 16; ++j) {
-        for (auto i = 0; i < 16; ++i) {
-          auto color = ImVec4(
-              (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
-          ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
-          ImGui::SameLine(0.f, 0.6f);
-        }
-        ImGui::NewLine();
+  if (!m_image)
+    return;
+  if (m_showInfo) {
+    if (ImGui::Begin("Info", &m_showInfo)) {
+      auto &image = *m_image;
+      if (ImGui::TreeNode("General")) {
+        ImGui::Text("Image Size %dx%d", image.header.width, image.header.height);
+        ImGui::Text("Origin (x=%d, y=%d)", image.header.x, image.header.y);
+        ImGui::Text("%d Planes", image.header.num_planes);
+        const char *masks[] = {"none", "masked", "lasso (for MacPaint)"};
+        ImGui::Text("Mask: %s", masks[std::clamp((int) image.header.masking, 0, 2)]);
+        const char *compressions[] = {"uncompressed", "RLE", "vertical RLE"};
+        ImGui::Text("Compression: %s", compressions[std::clamp((int) image.header.compression, 0, 2)]);
+        ImGui::Text("Pixel aspect: %d:%d", image.header.x_aspect, image.header.y_aspect);
+        ImGui::Text("Page Size %dx%d", image.header.page_width, image.header.page_width);
+        ImGui::TreePop();
       }
-      ImGui::TreePop();
+
+      // draw palette
+      if (ImGui::TreeNode("Palette")) {
+        auto palette = &image.palette[0];
+        for (auto j = 0; j < 16; ++j) {
+          for (auto i = 0; i < 16; ++i) {
+            auto color = ImVec4(
+                (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
+            ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
+            ImGui::SameLine(0.f, 0.6f);
+          }
+          ImGui::NewLine();
+        }
+        ImGui::TreePop();
+      }
     }
     ImGui::End();
   }
