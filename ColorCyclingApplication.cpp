@@ -6,9 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <imgui.h>
-#include <imgui/examples/imgui_impl_opengl3.h>
 #include <iostream>
-#include <sstream>
 
 const float fbwidth = 640;
 const float fbheight = 480;
@@ -55,49 +53,32 @@ constexpr unsigned int indices[] = {
     1, 2, 3 // second triangle
 };
 
-#ifdef __GNUC__
-#define CALC_TIME(res, anim_rate, time_msec)               \
-  asm volatile(                                            \
-      "\n\tmull %1" /* edx:eax <- eax(rate << 8) * msec */ \
-      "\n\tmovl $280000, %%ebx"                            \
-      "\n\tdivl %%ebx" /* eax <- edx:eax / ebx */          \
-      : "=a"(res)                                          \
-      : "g"((uint32_t)(time_msec)), "a"((anim_rate) << 8)  \
-      : "ebx", "edx")
-#endif /* __GNUC__ */
-
-static int32_t cycleOffset(int mode, int32_t rate, int32_t rsize, int32_t msec) {
-  int32_t offs, tm;
-
-  CALC_TIME(tm, rate, msec);
+static int32_t cycleOffset(int mode, int32_t rate, int32_t rsize, int32_t msec, float speed) {
+  float offs;
+  float tm = (rate / 280.0f) * static_cast<float>(msec * speed) / 1000.0f;
 
   switch (mode) {
   case CYCLE_PINGPONG:
-    rsize <<= 8; /* rsize -> 24.8 fixed point */
-    offs = tm % (rsize * 2);
-    if (offs > rsize)
-      offs = (rsize * 2) - offs;
-    rsize >>= 8; /* back to 32.0 */
+    offs = fmod(tm, static_cast<float>(rsize * 2));
+    if (offs >= rsize)
+      offs = static_cast<float>(rsize * 2) - offs;
     break;
 
   case CYCLE_SINE:
   case CYCLE_SINE_HALF: {
-    float t = (float) tm / 256.0; /* convert fixed24.8 -> float */
-    float x = fmod(t, (float) (rsize * 2));
-    float foffs = sin((x * M_PI * 2.0) / (float) rsize) + 1.0;
-    if (mode == CYCLE_SINE_HALF) {
-      foffs *= rsize / 4.0;
-    } else {
-      foffs *= rsize / 2.0;
-    }
-    offs = (int32_t)(foffs * 256.0); /* convert float -> fixed24.8 */
+    float x = fmod(tm, static_cast<float>(rsize));
+    offs = sinf((x * static_cast<float>(M_PI) * 2.0f) / static_cast<float>(rsize)) + 1.0f;
+    offs *= rsize / (mode == CYCLE_SINE_HALF ? 4.0f : 2.0f);
   } break;
 
   default: /* normal or reverse */
     offs = tm;
   }
+  return (int32_t)(offs * 256.0f);
+}
 
-  return offs;
+static std::uint8_t lerp(std::uint8_t a, std::uint8_t b, std::int32_t xt) {
+  return ((((a) << 8) + ((b) - (a)) * (xt)) >> 8);
 }
 
 static void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
@@ -107,8 +88,7 @@ static void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::
   pptr[2] = b;
 }
 
-ColorCyclingApplication::ColorCyclingApplication() {
-}
+ColorCyclingApplication::ColorCyclingApplication() = default;
 
 ColorCyclingApplication::~ColorCyclingApplication() {
   glDeleteVertexArrays(1, &m_vao);
@@ -119,25 +99,25 @@ ColorCyclingApplication::~ColorCyclingApplication() {
 void ColorCyclingApplication::onInit() {
   Application::onInit();
   int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+  glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);
   glCompileShader(vertexShader);
   // check for shader compile errors
   int success;
   char infoLog[512];
   glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
   if (!success) {
-    glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+    glGetShaderInfoLog(vertexShader, 512, nullptr, infoLog);
     std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n"
               << infoLog << std::endl;
   }
   // fragment shader
   int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+  glShaderSource(fragmentShader, 1, &fragmentShaderSource, nullptr);
   glCompileShader(fragmentShader);
   // check for shader compile errors
   glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
   if (!success) {
-    glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+    glGetShaderInfoLog(fragmentShader, 512, nullptr, infoLog);
     std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n"
               << infoLog << std::endl;
   }
@@ -149,7 +129,7 @@ void ColorCyclingApplication::onInit() {
   // check for linking errors
   glGetProgramiv(m_shaderProgram, GL_LINK_STATUS, &success);
   if (!success) {
-    glGetProgramInfoLog(m_shaderProgram, 512, NULL, infoLog);
+    glGetProgramInfoLog(m_shaderProgram, 512, nullptr, infoLog);
     std::cout << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n"
               << infoLog << std::endl;
   }
@@ -200,7 +180,7 @@ void ColorCyclingApplication::loadLbm(const std::string &path) {
   std::ifstream is(path, std::ios::binary);
 
   Chunk chunk{};
-  std::uint8_t *temp = nullptr;
+  std::uint8_t *temp;
   int bodyBytes = 0;
   constexpr auto chunkSize = sizeof(Chunk);
   is.read((char *) &chunk, chunkSize);
@@ -316,7 +296,7 @@ void ColorCyclingApplication::onRender() {
   // draw our first triangle
   glUseProgram(m_shaderProgram);
   glBindVertexArray(m_vao);// seeing as we only have a single m_vao there's no need to bind it every time, but we'll do so to keep things a bit more organized
-  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
 
   Application::onRender();
 }
@@ -337,7 +317,7 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
 
     time_msec += 100.0f / 60.f;
 
-    offs = cycleOffset(image.cycles[i].flags, image.cycles[i].rate, rsize, time_msec);
+    offs = cycleOffset(image.cycles[i].flags, image.cycles[i].rate, rsize, time_msec, m_speed);
 
     ioffs = (offs >> 8) % rsize;
 
@@ -361,28 +341,28 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
         }
       }
       to += image.cycles[i].low;
-      //
-      //      if(blend) {
-      //        int r, g, b;
-      //        int32_t frac_offs = offs & 0xff;
-      //
-      //        next += img->range[i].low;
-      //
-      //        r = LERP_FIXED_T(img->palette[to].r, img->palette[next].r, frac_offs);
-      //        g = LERP_FIXED_T(img->palette[to].g, img->palette[next].g, frac_offs);
-      //        b = LERP_FIXED_T(img->palette[to].b, img->palette[next].b, frac_offs);
-      //
-      //        set_palette(pidx, r, g, b);
-      //      } else {
-      setPalette(image, pidx, m_palette[to * 3], m_palette[to * 3 + 1], m_palette[to * 3 + 2]);
-      //}
+
+      if (m_blend) {
+        int r, g, b;
+        int32_t fracOffs = static_cast<int32_t>(offs & 0xff);
+
+        next += image.cycles[i].low;
+
+        r = lerp(m_palette[to * 3], m_palette[next * 3], fracOffs);
+        g = lerp(m_palette[to * 3 + 1], m_palette[next * 3 + 1], fracOffs);
+        b = lerp(m_palette[to * 3 + 2], m_palette[next * 3 + 2], fracOffs);
+
+        setPalette(image, pidx, r, g, b);
+      } else {
+        setPalette(image, pidx, m_palette[to * 3], m_palette[to * 3 + 1], m_palette[to * 3 + 2]);
+      }
     }
   }
   glBindTexture(GL_TEXTURE_1D, m_pal_tex);
   glTexSubImage1D(GL_TEXTURE_1D, 0, 0, 256, GL_RGB, GL_UNSIGNED_BYTE, &image.palette[0]);
 }
 
-void ColorCyclingApplication::reshape(int x, int y) {
+void ColorCyclingApplication::reshape(int x, int y) const {
   int loc;
   float aspect = (float) x / (float) y;
   float fbaspect = (float) fbwidth / (float) fbheight;
@@ -422,6 +402,8 @@ void ColorCyclingApplication::onImGuiRender() {
       ImGui::MenuItem("Debug", "Ctrl+I", &m_showInfo, (bool) m_image);
       ImGui::EndMenu();
     }
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 200);
+    ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
     ImGui::EndMainMenuBar();
   }
 
@@ -453,13 +435,19 @@ void ColorCyclingApplication::onImGuiRender() {
         ImGui::TreePop();
       }
 
+      if (ImGui::TreeNode("Options")) {
+        ImGui::Checkbox("Cycle Blend", &m_blend);
+        ImGui::DragFloat("Cycle Speed", &m_speed, 0.25f, 0.25f, 4.f);
+        ImGui::TreePop();
+      }
+
       // draw palette
       if (ImGui::TreeNode("Palette")) {
         auto palette = &image.palette[0];
         for (auto j = 0; j < 16; ++j) {
           for (auto i = 0; i < 16; ++i) {
             auto color = ImVec4(
-                (*palette++) / 255.0f, (*palette++) / 255.0f, (*palette++) / 255.0f, 1.0f);
+                static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, 1.0f);
             ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
             ImGui::SameLine(0.f, 0.6f);
           }
