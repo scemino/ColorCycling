@@ -252,7 +252,6 @@ void ColorCyclingApplication::loadLbm(const std::string &path) {
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbwidth, fbheight, GL_RED, GL_UNSIGNED_BYTE, image.image.data());
       glBindTexture(GL_TEXTURE_1D, m_pal_tex);
       glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, image.palette.data());
-      break;
     } else {
       if (chunk.length > 0)
         is.seekg(chunk.length, std::ios::cur);
@@ -344,7 +343,7 @@ void ColorCyclingApplication::onUpdate(const TimeSpan &elapsed) {
 
       if (m_blend) {
         int r, g, b;
-        int32_t fracOffs = static_cast<int32_t>(offs & 0xff);
+        auto fracOffs = static_cast<int32_t>(offs & 0xff);
 
         next += image.cycles[i].low;
 
