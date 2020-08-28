@@ -83,7 +83,7 @@ static std::uint8_t lerp(std::uint8_t a, std::uint8_t b, std::int32_t xt) {
 
 static int drawPalette(const std::uint8_t *palette, int numColorsByRow = 13, const ImVec2 &size = ImVec2(12, 12), const ImVec2 &spacing = ImVec2(2, 2)) {
   auto pos = ImGui::GetCursorScreenPos();
-  auto begPos = pos;
+  const auto begPos = pos;
   auto drawList = ImGui::GetWindowDrawList();
   const auto numRows = 256 / numColorsByRow;
   auto num = 0;
@@ -106,7 +106,7 @@ static int drawPalette(const std::uint8_t *palette, int numColorsByRow = 13, con
     pos.y += (size.y + spacing.y);
   }
   ImGui::SetCursorScreenPos({begPos.x, pos.y});
-  return index;
+  return index == -1 ? -1 : index - 1;
 }
 
 ColorCyclingApplication::ColorCyclingApplication() = default;
