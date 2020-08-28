@@ -21,6 +21,7 @@ protected:
 private:
   void reshape(int x, int y) const;
   void loadLbm(const std::string &path);
+  void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::uint8_t b) const;
 
 private:
   std::unique_ptr<Ilbm> m_image{};
@@ -33,6 +34,7 @@ private:
   bool m_showInfo{true};
   bool m_blend{true};
   float m_speed{1.f};
+  int m_currentColorIndex{-1};
 };
 
 #endif//COLORCYCLING__COLORCYCLINGAPPLICATION_H

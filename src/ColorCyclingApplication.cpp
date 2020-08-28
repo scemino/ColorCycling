@@ -81,11 +81,32 @@ static std::uint8_t lerp(std::uint8_t a, std::uint8_t b, std::int32_t xt) {
   return ((((a) << 8) + ((b) - (a)) * (xt)) >> 8);
 }
 
-static void setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
-  auto *pptr = &img.palette[0] + idx * 3;
-  pptr[0] = r;
-  pptr[1] = g;
-  pptr[2] = b;
+static int drawPalette(const std::uint8_t *palette, int numColorsByRow = 13, const ImVec2 &size = ImVec2(12, 12), const ImVec2 &spacing = ImVec2(2, 2)) {
+  auto pos = ImGui::GetCursorScreenPos();
+  auto begPos = pos;
+  auto drawList = ImGui::GetWindowDrawList();
+  const auto numRows = 256 / numColorsByRow;
+  auto num = 0;
+  int index = -1;
+  for (auto j = 0; j < numRows; ++j) {
+    for (auto i = 0; i < numColorsByRow; ++i) {
+      if (num++ == 255)
+        break;
+      auto color = ImColor(
+          static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, 1.0f);
+      auto max = ImVec2(pos.x + size.x, pos.y + size.y);
+      drawList->AddRectFilled(pos, max, color);
+      drawList->AddRect(pos, max, ImColor(0.8f, 0.8f, 0.8f, 1.0f), 0.0f, ImDrawCornerFlags_All, 0.2f);
+      if (ImGui::IsMouseHoveringRect(pos, max)) {
+        index = num;
+      }
+      pos.x += (size.x + spacing.x);
+    }
+    pos.x = begPos.x;
+    pos.y += (size.y + spacing.y);
+  }
+  ImGui::SetCursorScreenPos({begPos.x, pos.y});
+  return index;
 }
 
 ColorCyclingApplication::ColorCyclingApplication() = default;
@@ -263,6 +284,15 @@ void ColorCyclingApplication::loadLbm(const std::string &path) {
   is.close();
 }
 
+void ColorCyclingApplication::setPalette(Ilbm &img, int idx, std::uint8_t r, std::uint8_t g, std::uint8_t b) const {
+  if (m_currentColorIndex == idx)
+    return;
+  auto *pptr = &img.palette[0] + idx * 3;
+  pptr[0] = r;
+  pptr[1] = g;
+  pptr[2] = b;
+}
+
 void ColorCyclingApplication::onEvent(SDL_Event &event) {
   switch (event.type)
   case SDL_WINDOWEVENT: {
@@ -401,8 +431,11 @@ void ColorCyclingApplication::onImGuiRender() {
       ImGui::MenuItem("Debug", "Ctrl+I", &m_showInfo, (bool) m_image);
       ImGui::EndMenu();
     }
-    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 200);
-    ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    char fps[128];
+    sprintf(fps, "%.2f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    auto size = ImGui::CalcTextSize(fps);
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - size.x);
+    ImGui::Text("%s", fps);
     ImGui::EndMainMenuBar();
   }
 
@@ -442,15 +475,14 @@ void ColorCyclingApplication::onImGuiRender() {
 
       // draw palette
       if (ImGui::TreeNode("Palette")) {
-        auto palette = &image.palette[0];
-        for (auto j = 0; j < 16; ++j) {
-          for (auto i = 0; i < 16; ++i) {
-            auto color = ImVec4(
-                static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, static_cast<float>(*palette++) / 255.0f, 1.0f);
-            ImGui::ColorButton("", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker);
-            ImGui::SameLine(0.f, 0.6f);
-          }
-          ImGui::NewLine();
+        auto index = drawPalette(m_image->palette.data());
+        if (m_currentColorIndex != -1) {
+          memcpy(m_image->palette.data() + m_currentColorIndex * 3, m_palette.data() + m_currentColorIndex * 3, 3);
+        }
+        if (index != -1) {
+          ImGui::Text("Color #%d", index);
+          m_currentColorIndex = index;
+          memset(m_image->palette.data() + m_currentColorIndex * 3, 255, 3);
         }
         ImGui::TreePop();
       }
